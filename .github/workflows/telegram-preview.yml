@@ -1,6 +1,8 @@
 name: Telegram preview
 
 on:
+  push:
+    branches: [telegram-preview]
   workflow_dispatch:
 
 permissions:
