@@ -12,17 +12,18 @@ jobs:
   linux:
     name: Build with the telegram feature
     runs-on: ubuntu-latest
+    container: debian:12
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
       - name: GUI build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev libpipewire-0.3-dev clang libclang-dev cmake perl
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: telegram-preview
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev \
+            libpipewire-0.3-dev clang libclang-dev cmake perl
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
       - name: Build
         run: cargo build --locked --features telegram
       - uses: actions/upload-artifact@v7
