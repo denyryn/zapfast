@@ -13,9 +13,8 @@ pub fn chat_id(peer: &Peer) -> Option<String> {
         .map(|id| format!("tg:{id}"))
 }
 
-/// A dialog as a chat row.
-pub fn dialog_chat(dialog: &Dialog) -> Option<Chat> {
-    let peer = dialog.peer();
+/// A chat row from a resolved peer, before its dialog metadata is known.
+pub fn peer_chat(peer: &Peer) -> Option<Chat> {
     let id = chat_id(peer)?;
     let mut chat = Chat::new(id, peer_name(peer));
     chat.kind = match peer {
@@ -23,6 +22,13 @@ pub fn dialog_chat(dialog: &Dialog) -> Option<Chat> {
         Peer::Group(_) | Peer::Community(_) => ChatKind::Group,
         Peer::Channel(_) => ChatKind::Broadcast,
     };
+    Some(chat)
+}
+
+/// A dialog as a chat row.
+pub fn dialog_chat(dialog: &Dialog) -> Option<Chat> {
+    let peer = dialog.peer();
+    let mut chat = peer_chat(peer)?;
     if let tl::enums::Dialog::Dialog(raw) = &dialog.raw {
         chat.pinned = raw.pinned;
         chat.unread = raw.unread_count.max(0) as u32;

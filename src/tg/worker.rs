@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::archive::Archive;
 use crate::backend::{Command, Event, LinkStatus, Waker};
-use crate::model::{ChatId, Delivery, Message, ReplyTarget};
+use crate::model::{Chat, ChatId, Delivery, Message, ReplyTarget};
 use crate::paths::AccountDirs;
 use crate::tg::{Auth, convert, session::StoredSession};
 
@@ -478,7 +478,7 @@ impl Worker {
                         older: false,
                         complete: false,
                     });
-                    self.bump_chat(&row);
+                    self.bump_chat(&row).await;
                 }
             }
             Err(error) => {
@@ -509,7 +509,7 @@ impl Worker {
                     older: false,
                     complete: false,
                 });
-                self.bump_chat(&failed);
+                self.bump_chat(&failed).await;
             }
         }
     }
@@ -543,7 +543,7 @@ impl Worker {
                     older: false,
                     complete: false,
                 });
-                self.bump_chat(&row);
+                self.bump_chat(&row).await;
                 if !row.from_me {
                     self.emit(Event::Incoming {
                         chat: row.chat.clone(),
@@ -583,15 +583,30 @@ impl Worker {
         }
     }
 
-    fn bump_chat(&mut self, message: &Message) {
-        if let Ok(Some(mut chat)) = self.archive.chat(&message.chat) {
-            if !message.from_me {
-                chat.unread = chat.unread.saturating_add(1);
-                let _ = self.archive.set_unread(&chat.id, chat.unread);
-            }
-            let _ = self.archive.upsert_chat(&chat);
-            self.emit(Event::ChatUpdated(Box::new(chat)));
+    async fn bump_chat(&mut self, message: &Message) {
+        let mut chat = match self.archive.chat(&message.chat) {
+            Ok(Some(chat)) => chat,
+            _ => match self.learn_chat(&message.chat).await {
+                Some(chat) => chat,
+                None => return,
+            },
+        };
+        if !message.from_me {
+            chat.unread = chat.unread.saturating_add(1);
+            let _ = self.archive.set_unread(&chat.id, chat.unread);
         }
+        let _ = self.archive.upsert_chat(&chat);
+        self.emit(Event::ChatUpdated(Box::new(chat)));
+    }
+
+    /// Fetches a chat the dialog list did not carry, so a message from a peer
+    /// with no row yet still lands in a listed chat.
+    async fn learn_chat(&mut self, chat: &str) -> Option<Chat> {
+        let peer = self.peer_of(chat)?;
+        let client = self.client.clone()?;
+        let resolved = client.resolve_peer(peer.clone()).await.ok()?;
+        self.peers.insert(chat.to_owned(), peer);
+        convert::peer_chat(&resolved)
     }
 
     fn peer_of(&self, chat: &str) -> Option<PeerRef> {
