@@ -18,7 +18,7 @@ pub mod chat_export;
 pub use calls::CALL_LOG_LIMIT;
 mod drafts;
 mod encryption;
-pub use encryption::{archive_key_identity, copy_archive_key, forget_archive_key};
+pub use encryption::{archive_key_identity, copy_archive_key, forget_archive_key, telegram_key_identity};
 mod favorites;
 pub use favorites::Favorite;
 mod labels;
@@ -470,11 +470,24 @@ const UNARCHIVE_CHATS_AT: &str = "unarchive_chats_at";
 const LINK_PREVIEWS_DISABLED: &str = "link_previews_disabled";
 const LINK_PREVIEWS_DISABLED_AT: &str = "link_previews_disabled_at";
 
+/// Opens the Telegram database with its own keyring key. The Telegram runtime
+/// owns its schema; this never creates WhatsApp tables.
+#[cfg(feature = "telegram")]
+pub(crate) fn open_telegram(path: &Path) -> anyhow::Result<Connection> {
+    encryption::open_telegram(path)
+}
+
 impl Archive {
     /// Unlocks the on-disk archive with its OS keyring key, migrating plaintext
     /// archives before their first encrypted use. Never falls back to plaintext.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let key = encryption::key_for(path)?;
+        Self::open_with_key(path, &key)
+    }
+
+    #[cfg(feature = "telegram")]
+    pub fn open_telegram(path: &Path) -> anyhow::Result<Self> {
+        let key = encryption::key_for_telegram(path)?;
         Self::open_with_key(path, &key)
     }
 

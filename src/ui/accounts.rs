@@ -166,7 +166,8 @@ fn menu(app: &mut App, button: &egui::Response) {
                 Some(Icon::Plus),
                 &gettext(app.locale, "Add account"),
             ) {
-                app.actions.push(Action::AddAccount);
+                app.actions
+                    .push(Action::ShowDialog(crate::model::Dialog::AddAccount));
             }
         });
 }

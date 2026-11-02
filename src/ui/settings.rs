@@ -1730,7 +1730,8 @@ fn account(app: &mut App, ui: &mut egui::Ui) {
             )
             .clicked()
             {
-                app.actions.push(Action::AddAccount);
+                app.actions
+                    .push(Action::ShowDialog(crate::model::Dialog::AddAccount));
             }
         });
     });

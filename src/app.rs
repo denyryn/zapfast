@@ -14,8 +14,8 @@ use crate::i18n::Locale;
 use crate::image_preview::PreviewState;
 use crate::model::{
     AccountId, Action, Chat, ChatFilter, ChatId, ChatMedia, Contact, Content, Delivery, Dialog,
-    Gif, GifError, InfoPanel, InfoView, Label, Media, MediaState, Message, Page, PickerTab, Scroll,
-    SidebarDisplayMode, StickerPack, StickerShelf, Toast, ToastKind,
+    Gif, GifError, InfoPanel, InfoView, Label, Media, MediaState, Message, Page, PickerTab, Provider,
+    Scroll, SidebarDisplayMode, StickerPack, StickerShelf, Toast, ToastKind,
 };
 use crate::nav::{History, Location};
 use crate::paths::AppDirs;
@@ -1399,10 +1399,23 @@ impl App {
             let Some(id) = AccountId::parse(id) else {
                 continue;
             };
-            accounts.push(Account::spawn(&dirs, id, &settings, waker)?);
+            let provider = roster.provider(id.as_str());
+            accounts.push(Account::spawn(
+                &dirs,
+                id,
+                provider,
+                &settings,
+                waker,
+            )?);
         }
         if accounts.is_empty() {
-            accounts.push(Account::spawn(&dirs, AccountId::first(), &settings, waker)?);
+            accounts.push(Account::spawn(
+                &dirs,
+                AccountId::first(),
+                Provider::WhatsApp,
+                &settings,
+                waker,
+            )?);
             roster = AccountRoster::default();
         }
         let active = roster
@@ -1843,6 +1856,9 @@ impl App {
             .iter()
             .map(|account| account.id.0.clone())
             .collect();
+        self.roster
+            .providers
+            .retain(|id, _| self.roster.order.contains(id));
         if let Err(error) = self.roster.save_to(&self.files, &self.dirs.accounts_file()) {
             log::warn!("could not save accounts.json: {error}");
         }
@@ -2050,7 +2066,7 @@ impl App {
         self.pending_follow = None;
     }
 
-    fn add_account(&mut self) {
+    fn add_account(&mut self, provider: Provider) {
         let id = self.roster.allocate();
         let account = if self
             .accounts
@@ -2058,14 +2074,17 @@ impl App {
             .all(|account| account.backend.is_offline())
         {
             match Account::detached(&self.dirs, id, crate::settings::AccountSettings::default()) {
-                Ok((account, _)) => account,
+                Ok((mut account, _)) => {
+                    account.provider = provider;
+                    account
+                }
                 Err(error) => {
                     self.toast_error(format!("Could not add an account: {error}"));
                     return;
                 }
             }
         } else {
-            match Account::spawn(&self.dirs, id, &self.settings, &self.waker) {
+            match Account::spawn(&self.dirs, id, provider, &self.settings, &self.waker) {
                 Ok(account) => account,
                 Err(error) => {
                     self.toast_error(format!("Could not add an account: {error}"));
@@ -2123,9 +2142,8 @@ impl App {
         let removed = self.accounts[index].id.clone();
         self.forget_call_of(&removed);
         let dirs = self.accounts[index].dirs.clone();
-        // The key outlives the archive only by mistake: forget it once the
-        // archive is gone, never before.
         let key = crate::archive::archive_key_identity(&dirs.archive_db()).ok();
+        let telegram_key = crate::archive::telegram_key_identity(&dirs.telegram_db()).ok();
         let state_error = std::fs::remove_dir_all(&dirs.state).err();
         let cache_error = std::fs::remove_dir_all(&dirs.cache)
             .err()
@@ -2136,6 +2154,13 @@ impl App {
             && let Err(error) = crate::archive::forget_archive_key(&identity)
         {
             log::warn!("could not delete a removed account's archive key: {error:#}");
+        }
+        if let Some(identity) = telegram_key
+            && !dirs.telegram_db().exists()
+            && cfg!(not(test))
+            && let Err(error) = crate::archive::forget_archive_key(&identity)
+        {
+            log::warn!("could not delete a removed account's Telegram key: {error:#}");
         }
         self.accounts.remove(index);
         if index < self.active {
@@ -3657,6 +3682,17 @@ impl App {
 
     fn apply_backend_event(&mut self, event: Event, live: bool) {
         match event {
+            Event::TelegramAuth(auth) => {
+                let account = &mut self.accounts[self.active];
+                account.link = match &auth {
+                    crate::tg::Auth::Authorized => crate::backend::LinkStatus::Connected,
+                    crate::tg::Auth::Failed(error) => {
+                        crate::backend::LinkStatus::Failed(error.clone())
+                    }
+                    _ => crate::backend::LinkStatus::Starting,
+                };
+                account.tg.auth = auth;
+            }
             Event::StorageStats {
                 stats,
                 token,
@@ -10016,7 +10052,34 @@ impl App {
             Action::CloseWindow => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::SwitchAccount(id) => self.switch_account(&id),
             Action::CycleAccount(step) => self.cycle_account(step, Instant::now()),
-            Action::AddAccount => self.add_account(),
+            Action::AddAccount => self.add_account(Provider::WhatsApp),
+            Action::AddAccountOf(provider) => self.add_account(provider),
+            Action::TelegramRequestCode => {
+                let api_id = self.tg.api_id.trim().parse::<i32>().ok();
+                let api_hash = match self.tg.api_hash.trim() {
+                    "" => None,
+                    hash => Some(hash.to_owned()),
+                };
+                let typed = self.tg.phone.trim();
+                let phone = if typed.starts_with('+') {
+                    typed.to_owned()
+                } else {
+                    format!("+{typed}")
+                };
+                self.backend.send(Command::TelegramRequestCode {
+                    api_id,
+                    api_hash,
+                    phone,
+                });
+            }
+            Action::TelegramSubmitCode => {
+                let code = self.tg.code.trim().to_owned();
+                self.backend.send(Command::TelegramSubmitCode(code));
+            }
+            Action::TelegramSubmitPassword => {
+                let password = self.tg.password.clone();
+                self.backend.send(Command::TelegramSubmitPassword(password));
+            }
             Action::CancelAddAccount => {
                 // Back to the account the window showed before; leaving an
                 // unlinked new account removes it.

@@ -4,18 +4,16 @@ use egui::{Align, CornerRadius, Frame, Layout, Margin, Stroke, Vec2};
 
 use crate::app::App;
 use crate::backend::LinkStatus;
-use crate::model::{Action, Dialog};
+use crate::model::{Action, Dialog, Provider};
 use crate::qr::Qr;
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    card(
-        app,
-        ui,
-        "login",
-        &crate::i18n::gettext(app.locale, "A native WhatsApp client."),
-        body,
-    );
+    let tagline = match app.provider {
+        Provider::Telegram => "A native Telegram client.",
+        Provider::WhatsApp => "A native WhatsApp client.",
+    };
+    card(app, ui, "login", &crate::i18n::gettext(app.locale, tagline), body);
 }
 
 /// The centred card of the linking and lock screens: the logo, the name,
@@ -82,6 +80,27 @@ pub(super) fn card(
 }
 
 fn body(app: &mut App, ui: &mut egui::Ui) {
+    match app.provider {
+        Provider::Telegram => telegram(app, ui),
+        Provider::WhatsApp => whatsapp(app, ui),
+    }
+    super::accounts::login_choices(app, ui);
+    ui.add_space(18.0);
+    let note = match app.provider {
+        Provider::Telegram => {
+            "Unofficial client. Your API ID and hash stay on this computer."
+        }
+        Provider::WhatsApp => "Unofficial client. Using it may be against WhatsApp's terms of service.",
+    };
+    theme::paragraph(
+        ui,
+        crate::i18n::gettext(app.locale, note),
+        theme::regular(11.5),
+        app.palette.dim,
+    );
+}
+
+fn whatsapp(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let locale = app.locale;
     match app.link.clone() {
@@ -176,17 +195,251 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     }
-    super::accounts::login_choices(app, ui);
-    ui.add_space(18.0);
-    theme::paragraph(
-        ui,
-        crate::i18n::gettext(
-            locale,
-            "Unofficial client. Using it may be against WhatsApp's terms of service.",
-        ),
-        theme::regular(11.5),
-        palette.dim,
-    );
+}
+
+fn telegram(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let locale = app.locale;
+    match app.tg.auth.clone() {
+        crate::tg::Auth::Starting => {
+            busy(
+                ui,
+                palette.accent,
+                &crate::i18n::gettext(locale, "Connecting to Telegram…"),
+            );
+        }
+        crate::tg::Auth::Authorized => {
+            busy(
+                ui,
+                palette.accent,
+                &crate::i18n::gettext(locale, "Linked. Waiting for your chats…"),
+            );
+        }
+        crate::tg::Auth::Failed(message) => {
+            theme::icon(ui, Icon::CircleAlert, 28.0, palette.danger);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(message)
+                        .font(theme::regular(13.5))
+                        .color(palette.danger),
+                )
+                .wrap(),
+            );
+            ui.add_space(12.0);
+            if theme::pill_button(
+                ui,
+                &palette,
+                &crate::i18n::gettext(locale, "Try again"),
+                true,
+            )
+            .clicked()
+            {
+                app.actions.push(Action::Reconnect);
+            }
+        }
+        crate::tg::Auth::NeedCredentials { error } => {
+            theme::text(
+                ui,
+                crate::i18n::gettext(locale, "Connect your Telegram account"),
+                theme::semibold(16.0),
+                palette.text,
+            );
+            theme::paragraph(
+                ui,
+                crate::i18n::gettext(
+                    locale,
+                    "Telegram gives every client its own API ID and hash. Create them for your account at my.telegram.org and paste them here. They are stored encrypted on this computer and never sent anywhere else.",
+                ),
+                theme::regular(13.0),
+                palette.secondary,
+            );
+            let api_id = field(ui, &palette, "tg-api-id", &mut app.tg.api_id, "API ID", false);
+            let api_hash = field(
+                ui,
+                &palette,
+                "tg-api-hash",
+                &mut app.tg.api_hash,
+                "API hash",
+                false,
+            );
+            let phone = field(
+                ui,
+                &palette,
+                "tg-phone",
+                &mut app.tg.phone,
+                "Phone number with country code",
+                false,
+            );
+            auth_error(ui, &palette, error.as_deref());
+            let ready = app.tg.api_id.trim().parse::<i32>().is_ok()
+                && app.tg.api_hash.trim().len() >= 8
+                && app.tg.phone.chars().filter(char::is_ascii_digit).count() >= 7;
+            if submit_button(
+                ui,
+                &palette,
+                locale,
+                "Send code",
+                ready,
+                api_id || api_hash || phone,
+            ) {
+                app.actions.push(Action::TelegramRequestCode);
+            }
+        }
+        crate::tg::Auth::NeedPhone { error } => {
+            theme::text(
+                ui,
+                crate::i18n::gettext(locale, "Enter your phone number"),
+                theme::semibold(16.0),
+                palette.text,
+            );
+            theme::paragraph(
+                ui,
+                crate::i18n::gettext(
+                    locale,
+                    "Telegram sends a login code to this phone. Use the whole number, starting with the country code.",
+                ),
+                theme::regular(13.0),
+                palette.secondary,
+            );
+            let phone = field(
+                ui,
+                &palette,
+                "tg-phone",
+                &mut app.tg.phone,
+                "+15551234567",
+                false,
+            );
+            auth_error(ui, &palette, error.as_deref());
+            let ready = app.tg.phone.chars().filter(char::is_ascii_digit).count() >= 7;
+            if submit_button(ui, &palette, locale, "Send code", ready, phone) {
+                app.actions.push(Action::TelegramRequestCode);
+            }
+        }
+        crate::tg::Auth::NeedCode { error } => {
+            theme::text(
+                ui,
+                crate::i18n::gettext(locale, "Enter the code"),
+                theme::semibold(16.0),
+                palette.text,
+            );
+            theme::paragraph(
+                ui,
+                crate::i18n::gettext(
+                    locale,
+                    "Telegram sent a login code to your phone. It works once, and only here.",
+                ),
+                theme::regular(13.0),
+                palette.secondary,
+            );
+            let code = field(
+                ui,
+                &palette,
+                "tg-code",
+                &mut app.tg.code,
+                "Login code",
+                false,
+            );
+            auth_error(ui, &palette, error.as_deref());
+            let ready = app.tg.code.trim().len() >= 4;
+            if submit_button(ui, &palette, locale, "Sign in", ready, code) {
+                app.actions.push(Action::TelegramSubmitCode);
+            }
+        }
+        crate::tg::Auth::NeedPassword { hint, error } => {
+            theme::text(
+                ui,
+                crate::i18n::gettext(locale, "Two-step verification"),
+                theme::semibold(16.0),
+                palette.text,
+            );
+            let message = match &hint {
+                Some(hint) => crate::i18n::gettext(locale, "This account asks for its password. Hint: {hint}")
+                    .replace("{hint}", hint),
+                None => crate::i18n::gettext(
+                    locale,
+                    "This account asks for its two-step verification password.",
+                )
+                .into_owned(),
+            };
+            theme::paragraph(ui, message, theme::regular(13.0), palette.secondary);
+            let password = field(
+                ui,
+                &palette,
+                "tg-password",
+                &mut app.tg.password,
+                "Password",
+                true,
+            );
+            auth_error(ui, &palette, error.as_deref());
+            let ready = !app.tg.password.is_empty();
+            if submit_button(ui, &palette, locale, "Sign in", ready, password) {
+                app.actions.push(Action::TelegramSubmitPassword);
+            }
+        }
+    }
+}
+
+fn field(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    id: &str,
+    value: &mut String,
+    hint: &str,
+    secret: bool,
+) -> bool {
+    let id = egui::Id::new(id);
+    let submit = ui.memory(|memory| memory.has_focus(id))
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let field = Frame::new()
+        .fill(palette.surface)
+        .corner_radius(CornerRadius::same(theme::RADIUS))
+        .inner_margin(Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_min_height(
+                ui.ctx()
+                    .fonts_mut(|fonts| fonts.row_height(&theme::regular(16.0)))
+                    + 4.0,
+            );
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .id(id)
+                    .hint_text(
+                        egui::RichText::new(hint)
+                            .color(palette.dim)
+                            .font(theme::regular(16.0)),
+                    )
+                    .font(theme::regular(16.0))
+                    .text_color(palette.text)
+                    .password(secret)
+                    .frame(egui::Frame::NONE)
+                    .desired_width(f32::INFINITY),
+            );
+        });
+    theme::focus_outline(ui, id, field.response.rect, f32::from(theme::RADIUS));
+    submit
+}
+
+fn auth_error(ui: &mut egui::Ui, palette: &theme::Palette, error: Option<&str>) {
+    if let Some(error) = error {
+        theme::paragraph(ui, error, theme::regular(13.0), palette.danger);
+    }
+}
+
+fn submit_button(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    locale: crate::i18n::Locale,
+    label: &'static str,
+    ready: bool,
+    submit: bool,
+) -> bool {
+    let clicked = ui
+        .add_enabled_ui(ready, |ui| {
+            theme::pill_button(ui, palette, &crate::i18n::gettext(locale, label), true)
+        })
+        .inner
+        .clicked();
+    (clicked || submit) && ready
 }
 
 pub(super) fn busy(ui: &mut egui::Ui, color: egui::Color32, label: &str) {

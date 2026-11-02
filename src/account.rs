@@ -12,7 +12,7 @@ use std::time::Instant;
 use crate::app::{AttachmentDraft, ComposerMention, Conversation};
 use crate::backend::{Backend, LinkStatus, Waker};
 use crate::model::{
-    AccountId, Chat, ChatActivity, ChatFilter, ChatId, Contact, Label, Message, PollDraft,
+    AccountId, Chat, ChatActivity, ChatFilter, ChatId, Contact, Label, Message, PollDraft, Provider,
     StickerPack,
 };
 use crate::paths::{AccountDirs, AppDirs};
@@ -21,11 +21,15 @@ use crate::settings::AccountSettings;
 /// One WhatsApp account's runtime state.
 pub struct Account {
     pub id: AccountId,
+    /// WhatsApp or Telegram. The transcript id prefix follows from it.
+    pub provider: Provider,
     pub dirs: AccountDirs,
     pub settings: AccountSettings,
     pub(crate) settings_dirty: bool,
     pub backend: Backend,
     pub link: LinkStatus,
+    /// The Telegram login form and where it stands.
+    pub tg: crate::tg::Login,
     pub syncing: bool,
     pub sync_percent: Option<u32>,
     pub me: Option<String>,
@@ -172,13 +176,17 @@ impl Account {
             _ => ChatFilter::All,
         };
         let call_filter = crate::model::CallFilter::parse(settings.call_filter.as_deref());
+        let provider = backend.provider();
+        let link = LinkStatus::Starting;
         Self {
             id,
+            provider,
             dirs,
             settings,
             settings_dirty: false,
             backend,
-            link: LinkStatus::Starting,
+            link,
+            tg: Default::default(),
             syncing: false,
             sync_percent: None,
             me: None,
@@ -270,6 +278,7 @@ impl Account {
     pub fn spawn(
         app_dirs: &AppDirs,
         id: AccountId,
+        provider: Provider,
         legacy: &crate::settings::Settings,
         waker: &Waker,
     ) -> std::io::Result<Self> {
@@ -289,7 +298,7 @@ impl Account {
             AccountSettings::default()
         };
         resolve_wallpaper_path(&dirs, &mut settings);
-        let backend = Backend::spawn(dirs.clone(), waker.clone());
+        let backend = Backend::spawn(dirs.clone(), waker.clone(), provider);
         Ok(Self::new(id, dirs, settings, backend))
     }
 

@@ -7195,6 +7195,12 @@ impl Worker {
             return;
         }
         match command {
+            Command::TelegramRequestCode { .. }
+            | Command::TelegramSubmitCode(_)
+            | Command::TelegramSubmitPassword(_)
+            | Command::TelegramLogout => {
+                log::warn!("a Telegram command reached a WhatsApp account");
+            }
             Command::FetchBlocklist => self.fetch_blocklist(),
             Command::SetBlocked { chat, blocked } => self.set_blocked(chat, blocked),
             Command::BlocklistFetched { generation, result } => {

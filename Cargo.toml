@@ -81,6 +81,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # relay transport.
 whatsapp-rust = { git = "https://github.com/crmne/whatsapp-rust", rev = "94f7c1376f8f6a77c55d85570a260600ad27de0b", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native", "voip"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "fs", "net", "io-util"] }
+# Telegram protocol. Only compiled with the `telegram` feature; the session
+# state is stored in SQLCipher under the account folder, not libsql.
+grammers-client = { version = "0.11.0", default-features = false, optional = true }
+grammers-session = { version = "0.11.0", default-features = false, features = ["serde"], optional = true }
 # Queue between the call's audio streams and the engine.
 async-channel = "2.5"
 # Opens the WhatsApp WebSocket through a proxy. Both crates are already
@@ -330,6 +334,9 @@ harness = false
 [features]
 # Sample data, layout tests, and screenshots. Not used in release builds.
 demo = []
+# The Telegram runtime. Off by default: a default build compiles no Telegram
+# protocol dependency and keeps the WhatsApp client unchanged.
+telegram = ["dep:grammers-client", "dep:grammers-session"]
 
 [profile.release]
 lto = "thin"

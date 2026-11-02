@@ -34,6 +34,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::Shortcuts => shortcuts_width(ui.ctx().content_rect().width()),
                 Dialog::About => 380.0,
                 Dialog::ConfirmUnlink => 380.0,
+                Dialog::AddAccount => 360.0,
                 Dialog::ConfirmRemoveAccount(_) => 380.0,
                 Dialog::ConfirmClearMediaCache(_) => 380.0,
                 Dialog::ConfirmLeaveGroup(_) => 380.0,
@@ -91,6 +92,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 Dialog::Shortcuts => shortcuts(app, ui),
                 Dialog::About => about(app, ui),
                 Dialog::ConfirmUnlink => confirm_unlink(app, ui),
+                Dialog::AddAccount => add_account(app, ui),
                 Dialog::ConfirmRemoveAccount(id) => confirm_remove(app, ui, id),
                 Dialog::ConfirmClearMediaCache(id) => confirm_clear_media(app, ui, id),
                 Dialog::ConfirmLeaveGroup(id) => confirm_leave_group(app, ui, &id),
@@ -1587,6 +1589,33 @@ fn confirm_clear_media(app: &mut App, ui: &mut egui::Ui, id: crate::model::Accou
         &crate::i18n::gettext(locale, "Clear"),
         [Action::ClearMediaCache(id)],
     );
+}
+
+fn add_account(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let locale = app.locale;
+    title(ui, app, &crate::i18n::gettext(locale, "Add an account"));
+    theme::paragraph(
+        ui,
+        crate::i18n::gettext(
+            locale,
+            "Choose the network this account belongs to. Each account keeps its own chats here.",
+        ),
+        theme::regular(13.0),
+        palette.secondary,
+    );
+    ui.add_space(12.0);
+    for (provider, label) in [
+        (crate::model::Provider::WhatsApp, "WhatsApp"),
+        (crate::model::Provider::Telegram, "Telegram"),
+    ] {
+        if theme::pill_button(ui, &palette, label, provider == crate::model::Provider::WhatsApp)
+            .clicked()
+        {
+            app.actions.push(Action::CloseDialog);
+            app.actions.push(Action::AddAccountOf(provider));
+        }
+    }
 }
 
 fn confirm_remove(app: &mut App, ui: &mut egui::Ui, id: crate::model::AccountId) {

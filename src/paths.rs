@@ -336,6 +336,17 @@ impl AccountDirs {
         self.state.join("archive.db")
     }
 
+    /// The Telegram archive. It has its own keyring entry, never the
+    /// WhatsApp archive's.
+    pub fn telegram_db(&self) -> PathBuf {
+        self.state.join("telegram.db")
+    }
+
+    /// Telegram media, separate from the WhatsApp cache.
+    pub fn telegram_cache_dir(&self) -> PathBuf {
+        self.cache.join("tg")
+    }
+
     pub fn settings_file(&self) -> PathBuf {
         self.state.join("settings.json")
     }
@@ -437,6 +448,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn telegram_storage_sits_beside_the_whatsapp_archive() {
+        let dirs = AppDirs::under(&root("telegram")).account(&AccountId::first());
+        assert_eq!(dirs.telegram_db(), dirs.state.join("telegram.db"));
+        assert_eq!(dirs.telegram_cache_dir(), dirs.cache.join("tg"));
     }
 
     #[cfg(unix)]

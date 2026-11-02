@@ -10,7 +10,28 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 /// Chat JID string: `<phone>@s.whatsapp.net`, `<id>@g.us`, or `<id>@lid`.
+///
+/// A Telegram chat carries the `tg:` prefix; WhatsApp ids stay exactly as the
+/// protocol gives them.
 pub type ChatId = String;
+
+/// Which network an account or chat belongs to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    #[default]
+    WhatsApp,
+    Telegram,
+}
+
+impl Provider {
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::WhatsApp => "wa:",
+            Self::Telegram => "tg:",
+        }
+    }
+}
 
 /// Live activity another participant is performing in a chat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +77,81 @@ impl std::fmt::Display for AccountId {
 impl From<&str> for AccountId {
     fn from(value: &str) -> Self {
         Self(value.to_owned())
+    }
+}
+
+/// A chat's identity across providers.
+///
+/// The account is part of the key because WhatsApp ids are unique only inside
+/// one linked account, and Telegram chats repeat ids across accounts too.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ChatKey {
+    pub account: AccountId,
+    pub provider: Provider,
+    pub id: String,
+}
+
+impl ChatKey {
+    pub fn new(account: AccountId, provider: Provider, id: impl Into<String>) -> Self {
+        Self {
+            account,
+            provider,
+            id: id.into(),
+        }
+    }
+
+    /// Reads a chat id as the archive and links spell it. The `wa:` prefix is
+    /// accepted for a future unified spelling but is not required; a bare
+    /// JID is WhatsApp. Every other value is a WhatsApp id unchanged.
+    pub fn parse(account: AccountId, value: &str) -> Self {
+        if let Some(id) = value.strip_prefix(Provider::Telegram.prefix()) {
+            Self::new(account, Provider::Telegram, id)
+        } else if let Some(id) = value.strip_prefix(Provider::WhatsApp.prefix()) {
+            Self::new(account, Provider::WhatsApp, id)
+        } else {
+            Self::new(account, Provider::WhatsApp, value)
+        }
+    }
+
+    /// The id to store. WhatsApp keeps its raw JID so existing archives and
+    /// links stay byte-identical; Telegram carries its `tg:` prefix.
+    pub fn chat_id(&self) -> String {
+        match self.provider {
+            Provider::WhatsApp => self.id.clone(),
+            Provider::Telegram => format!("{}{}", Provider::Telegram.prefix(), self.id),
+        }
+    }
+}
+
+#[cfg(test)]
+mod chat_key_tests {
+    use super::*;
+
+    #[test]
+    fn an_existing_whatsapp_id_parses_unchanged() {
+        for id in ["491701234567@s.whatsapp.net", "120363000000000001@g.us"] {
+            let key = ChatKey::parse(AccountId::first(), id);
+            assert_eq!(key.provider, Provider::WhatsApp);
+            assert_eq!(key.id, id);
+            assert_eq!(key.chat_id(), id);
+        }
+    }
+
+    #[test]
+    fn the_whatsapp_prefix_is_accepted_but_never_written() {
+        let key = ChatKey::parse(AccountId::first(), "wa:491701234567@s.whatsapp.net");
+        assert_eq!(key.provider, Provider::WhatsApp);
+        assert_eq!(key.id, "491701234567@s.whatsapp.net");
+        assert_eq!(key.chat_id(), key.id);
+    }
+
+    #[test]
+    fn a_telegram_id_keeps_its_prefix_and_account() {
+        let key = ChatKey::parse(AccountId("2".into()), "tg:-1001234567890");
+        assert_eq!(key.account, AccountId("2".into()));
+        assert_eq!(key.provider, Provider::Telegram);
+        assert_eq!(key.id, "-1001234567890");
+        assert_eq!(key.chat_id(), "tg:-1001234567890");
     }
 }
 
@@ -2478,6 +2574,8 @@ pub enum Dialog {
     About,
     ConfirmUnlink,
     ConfirmRemoveAccount(AccountId),
+    /// Chooses the network a new account belongs to.
+    AddAccount,
     /// Confirms emptying one account's media cache.
     ConfirmClearMediaCache(AccountId),
     /// Phone number used for pairing-code linking.
@@ -3422,8 +3520,16 @@ pub enum Action {
     SwitchAccount(AccountId),
     /// Moves to the next (`1`) or previous (`-1`) account, wrapping round.
     CycleAccount(i8),
-    /// Starts linking another number beside the ones already here.
+    /// Starts linking another account beside the ones already here.
     AddAccount,
+    /// Starts linking an account on one network.
+    AddAccountOf(Provider),
+    /// Telegram: sends a login code to the number in the login form.
+    TelegramRequestCode,
+    /// Telegram: submits the login code in the form.
+    TelegramSubmitCode,
+    /// Telegram: submits the two-step verification password in the form.
+    TelegramSubmitPassword,
     /// Leaves an account being added before it was linked.
     CancelAddAccount,
     /// Unlinks an account and deletes what is stored here for it.

@@ -1,9 +1,11 @@
 //! User preferences stored in JSON.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::model::Provider;
 
 /// Verifying the locked-chat code costs about 20 ms, paid once per distinct
 /// typed string. ponytail: fixed cost, revisit if it lags the search field.
@@ -909,6 +911,10 @@ pub struct AccountRoster {
     pub next_id: u32,
     pub active: String,
     pub order: Vec<String>,
+    /// Accounts that are not WhatsApp. A missing entry is WhatsApp, so files
+    /// written before providers existed load unchanged.
+    #[serde(default)]
+    pub providers: HashMap<String, Provider>,
 }
 
 impl Default for AccountRoster {
@@ -917,11 +923,16 @@ impl Default for AccountRoster {
             next_id: 2,
             active: "1".into(),
             order: vec!["1".into()],
+            providers: HashMap::new(),
         }
     }
 }
 
 impl AccountRoster {
+    pub fn provider(&self, id: &str) -> Provider {
+        self.providers.get(id).copied().unwrap_or_default()
+    }
+
     pub fn load(path: &Path) -> std::io::Result<Self> {
         let mut roster = match std::fs::read_to_string(path) {
             Ok(contents) => serde_json::from_str(&contents).map_err(std::io::Error::other)?,
@@ -939,6 +950,7 @@ impl AccountRoster {
         let mut seen = HashSet::new();
         self.order
             .retain(|id| crate::model::AccountId::is_safe(id) && seen.insert(id.clone()));
+        self.providers.retain(|id, _| seen.contains(id));
         if !self.order.iter().any(|id| id == &self.active) {
             self.active = self.order.first().cloned().unwrap_or_else(|| "1".into());
         }
@@ -1412,6 +1424,7 @@ mod tests {
             next_id: 4,
             active: "../etc".into(),
             order: vec!["1".into(), "..".into(), "/tmp".into()],
+            providers: Default::default(),
         };
         roster.sanitize();
         assert_eq!(roster.order, ["1".to_string()]);
@@ -1425,6 +1438,7 @@ mod tests {
             next_id: 3,
             active: "1".into(),
             order: vec!["1".into(), "1".into(), "2".into()],
+            providers: Default::default(),
         };
         roster.sanitize();
         assert_eq!(roster.order, ["1".to_string(), "2".to_string()]);
@@ -1455,6 +1469,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let roster = AccountRoster::load(&dir.path().join("accounts.json")).unwrap();
         assert_eq!(roster, AccountRoster::default());
+    }
+
+    #[test]
+    fn a_roster_written_before_providers_loads_every_account_as_whatsapp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        std::fs::write(
+            &path,
+            r#"{"next_id":3,"active":"2","order":["1","2"]}"#,
+        )
+        .unwrap();
+        let roster = AccountRoster::load(&path).unwrap();
+        assert_eq!(roster.provider("1"), Provider::WhatsApp);
+        assert_eq!(roster.provider("2"), Provider::WhatsApp);
+        assert!(roster.providers.is_empty());
+    }
+
+    #[test]
+    fn a_telegram_provider_survives_a_round_trip_and_unknown_ids_are_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        std::fs::write(
+            &path,
+            r#"{"next_id":4,"active":"2","order":["1","2"],"providers":{"2":"telegram","9":"telegram"}}"#,
+        )
+        .unwrap();
+        let roster = AccountRoster::load(&path).unwrap();
+        assert_eq!(roster.provider("1"), Provider::WhatsApp);
+        assert_eq!(roster.provider("2"), Provider::Telegram);
+        assert!(!roster.providers.contains_key("9"));
+        let saved = serde_json::to_string(&roster).unwrap();
+        let again: AccountRoster = serde_json::from_str(&saved).unwrap();
+        assert_eq!(again, roster);
     }
 }
 

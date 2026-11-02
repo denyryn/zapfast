@@ -25,14 +25,36 @@ fn plaintext(path: &Path) -> Result<bool> {
 }
 
 pub(super) fn key_for(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
+    key_for_identity(path, identity_for)
+}
+
+/// The Telegram database's key comes from its own entry in the same store.
+#[cfg(feature = "telegram")]
+pub(super) fn key_for_telegram(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
+    key_for_identity(path, telegram_identity_for)
+}
+
+fn key_for_identity(
+    path: &Path,
+    identity: fn(&Path) -> Result<String>,
+) -> Result<Zeroizing<[u8; 32]>> {
     let parent = path.parent().context("Archive has no parent directory")?;
     fs::create_dir_all(parent)?;
     let store = platform_store()?;
     let entry = store
-        .build("rocks.zapfast.ZapFast", &identity_for(parent)?, None)
+        .build("rocks.zapfast.ZapFast", &identity(parent)?, None)
         .map_err(keyring_error)
         .context("The OS keyring could not open ZapFast's archive key")?;
     key_from_entry(path, &entry)
+}
+
+/// Opens the Telegram database with SQLCipher and its own keyring key. The
+/// Telegram runtime owns the schema; this only guarantees the same refusal to
+/// fall back to plaintext as the WhatsApp archive.
+#[cfg(feature = "telegram")]
+pub(super) fn open_telegram(path: &Path) -> Result<Connection> {
+    let key = key_for_telegram(path)?;
+    open(path, &key)
 }
 
 /// Copies the keyring entry when an archive moves to another folder.
@@ -125,17 +147,27 @@ pub fn archive_key_identity(path: &Path) -> Result<String> {
     identity_for(path.parent().context("Archive has no parent directory")?)
 }
 
+/// The keyring identity of the Telegram database at `path`, while its folder
+/// exists. Distinct from the archive's so one missing key never blocks the
+/// other database.
+pub fn telegram_key_identity(path: &Path) -> Result<String> {
+    telegram_identity_for(path.parent().context("Archive has no parent directory")?)
+}
+
 fn identity_for(parent: &Path) -> Result<String> {
-    // Separate profiles must not overwrite each other's keys. The credential
-    // label contains a digest, never a user path, phone number or message data.
+    Ok(format!("archive-{}", path_digest(parent)?))
+}
+
+fn telegram_identity_for(parent: &Path) -> Result<String> {
+    Ok(format!("telegram-{}", path_digest(parent)?))
+}
+
+fn path_digest(parent: &Path) -> Result<String> {
     let digest = Sha256::digest(parent.canonicalize()?.as_os_str().as_encoded_bytes());
-    Ok(format!(
-        "archive-{}",
-        digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    ))
+    Ok(digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>())
 }
 
 fn platform_store() -> Result<std::sync::Arc<dyn CredentialStoreApi>> {
@@ -360,6 +392,35 @@ mod tests {
         connection
             .query_row("SELECT value FROM secrets", [], |row| row.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn the_telegram_key_is_a_separate_entry_and_never_blocks_whatsapp() {
+        let directory = directory();
+        let archive_path = directory.path().join("archive.db");
+        let telegram_path = directory.path().join("telegram.db");
+        let store = keyring_core::mock::Store::new().unwrap();
+        let archive_identity = identity_for(directory.path()).unwrap();
+        let telegram_identity = telegram_identity_for(directory.path()).unwrap();
+        assert_ne!(archive_identity, telegram_identity);
+        assert!(archive_identity.starts_with("archive-"));
+        assert!(telegram_identity.starts_with("telegram-"));
+
+        let archive_entry = store
+            .build("zapfast-test", &archive_identity, None)
+            .unwrap();
+        let telegram_entry = store
+            .build("zapfast-test", &telegram_identity, None)
+            .unwrap();
+        let archive_key = key_from_entry(&archive_path, &archive_entry).unwrap();
+        let telegram_key = key_from_entry(&telegram_path, &telegram_entry).unwrap();
+        open(&archive_path, &archive_key).unwrap();
+        open(&telegram_path, &telegram_key).unwrap();
+
+        // Losing the Telegram key stops only the Telegram database.
+        telegram_entry.delete_credential().unwrap();
+        assert!(key_from_entry(&telegram_path, &telegram_entry).is_err());
+        assert!(open(&archive_path, &archive_key).is_ok());
     }
 
     #[test]

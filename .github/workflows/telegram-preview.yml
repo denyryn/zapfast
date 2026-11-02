@@ -1,0 +1,30 @@
+name: Telegram preview
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Build with the telegram feature
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libasound2-dev libpipewire-0.3-dev clang libclang-dev cmake perl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: telegram-preview
+      - name: Build
+        run: cargo build --locked --features telegram
+      - uses: actions/upload-artifact@v7
+        with:
+          name: zapfast-telegram-linux-x86_64
+          path: target/debug/zapfast
+          if-no-files-found: error

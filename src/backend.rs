@@ -10,8 +10,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::model::{
-    Chat, ChatActivity, ChatId, Contact, Gif, GifError, GifPage, Message, PollDraft, StickerPack,
-    StorageStats,
+    Chat, ChatActivity, ChatId, Contact, Gif, GifError, GifPage, Message, PollDraft, Provider,
+    StickerPack, StorageStats,
 };
 use crate::paths::AccountDirs;
 
@@ -81,7 +81,11 @@ mod tests {
     fn backend_waits_for_window_acknowledgement_before_touching_storage() {
         let directory = tempfile::tempdir().unwrap();
         let dirs = crate::paths::AppDirs::under(directory.path());
-        let mut backend = super::Backend::spawn(dirs.as_account(), super::Waker::default());
+        let mut backend = super::Backend::spawn(
+            dirs.as_account(),
+            super::Waker::default(),
+            crate::model::Provider::WhatsApp,
+        );
         assert!(!dirs.session_db().exists());
         assert!(!dirs.archive_db().exists());
         // Closing before a first frame must cancel startup without connecting
@@ -200,6 +204,19 @@ pub enum Command {
         /// A preview built here for the first link in `text`.
         preview: Option<crate::model::ComposedPreview>,
     },
+    /// Telegram: send the login code to this phone. The credentials are
+    /// stored in the encrypted archive, never in settings.
+    TelegramRequestCode {
+        api_id: Option<i32>,
+        api_hash: Option<String>,
+        phone: String,
+    },
+    /// Telegram: the code the phone received.
+    TelegramSubmitCode(String),
+    /// Telegram: the two-step password, when the account has one.
+    TelegramSubmitPassword(String),
+    /// Telegram: sign this account out and forget its archive.
+    TelegramLogout,
     /// Reads the page behind a link in the composer; answered by
     /// [`Event::LinkPreview`]. A newer request replaces an unfinished one.
     FetchLinkPreview {
@@ -1218,6 +1235,8 @@ pub enum Event {
         error: Option<String>,
     },
     Link(LinkStatus),
+    /// Where the Telegram login stands, for its form.
+    TelegramAuth(crate::tg::Auth),
     /// Linked account identity.
     Me {
         id: String,
@@ -1744,11 +1763,23 @@ pub enum Unsent {
 pub use fastframe_shell::Waker;
 
 /// UI handle to the backend runtime.
+/// What a backend is connected to.
+enum Runtime {
+    WhatsApp {
+        startup: Option<tokio::sync::oneshot::Sender<()>>,
+        commands: mpsc::UnboundedSender<Command>,
+        events: std::sync::mpsc::Receiver<Event>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    },
+    Telegram {
+        commands: mpsc::UnboundedSender<Command>,
+        events: std::sync::mpsc::Receiver<Event>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    },
+}
+
 pub struct Backend {
-    startup: Option<tokio::sync::oneshot::Sender<()>>,
-    commands: mpsc::UnboundedSender<Command>,
-    events: std::sync::mpsc::Receiver<Event>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    runtime: Runtime,
     offline: bool,
     #[cfg(any(test, feature = "demo"))]
     demo_commands: Option<std::sync::Mutex<Vec<Command>>>,
@@ -1759,7 +1790,14 @@ pub struct Backend {
 }
 
 impl Backend {
-    pub fn spawn(dirs: AccountDirs, waker: Waker) -> Self {
+    pub fn spawn(dirs: AccountDirs, waker: Waker, provider: Provider) -> Self {
+        match provider {
+            Provider::WhatsApp => Self::whatsapp(dirs, waker),
+            Provider::Telegram => Self::telegram(dirs, waker),
+        }
+    }
+
+    fn whatsapp(dirs: AccountDirs, waker: Waker) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1783,11 +1821,58 @@ impl Backend {
             .expect("unable to start the backend thread");
 
         Self {
-            startup: Some(startup),
-            commands: command_tx,
-            events: event_rx,
-            thread: Some(thread),
+            runtime: Runtime::WhatsApp {
+                startup: Some(startup),
+                commands: command_tx,
+                events: event_rx,
+                thread: Some(thread),
+            },
             offline: false,
+            #[cfg(any(test, feature = "demo"))]
+            demo_commands: None,
+            #[cfg(any(test, feature = "demo"))]
+            demo_events: None,
+            #[cfg(any(test, feature = "demo"))]
+            demo_waker: Waker::default(),
+        }
+    }
+
+    fn telegram(dirs: AccountDirs, waker: Waker) -> Self {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("zapfast-telegram")
+            .enable_all()
+            .build()
+            .expect("unable to start the async runtime");
+        #[cfg(feature = "telegram")]
+        let thread = Some(
+            std::thread::Builder::new()
+                .name("zapfast-telegram".to_string())
+                .spawn(move || {
+                    runtime.block_on(crate::tg::worker::run(
+                        dirs,
+                        event_tx,
+                        command_rx,
+                        waker,
+                    ));
+                    runtime.shutdown_timeout(Duration::from_secs(3));
+                })
+                .expect("unable to start the Telegram backend thread"),
+        );
+        #[cfg(not(feature = "telegram"))]
+        let thread = {
+            drop((dirs, event_tx, command_rx, waker, runtime));
+            None
+        };
+        Self {
+            runtime: Runtime::Telegram {
+                commands: command_tx,
+                events: event_rx,
+                thread,
+            },
+            offline: cfg!(not(feature = "telegram")),
             #[cfg(any(test, feature = "demo"))]
             demo_commands: None,
             #[cfg(any(test, feature = "demo"))]
@@ -1803,10 +1888,12 @@ impl Backend {
         let (event_tx, event_rx) = std::sync::mpsc::channel();
         (
             Self {
-                startup: None,
-                commands: command_tx,
-                events: event_rx,
-                thread: None,
+                runtime: Runtime::WhatsApp {
+                    startup: None,
+                    commands: command_tx,
+                    events: event_rx,
+                    thread: None,
+                },
                 offline: true,
                 #[cfg(any(test, feature = "demo"))]
                 demo_commands: None,
@@ -1824,7 +1911,12 @@ impl Backend {
     pub(crate) fn detached_with_startup() -> (Self, tokio::sync::oneshot::Receiver<()>) {
         let (mut backend, _) = Self::detached();
         let (startup, started) = tokio::sync::oneshot::channel();
-        backend.startup = Some(startup);
+        if let Runtime::WhatsApp {
+            startup: permit, ..
+        } = &mut backend.runtime
+        {
+            *permit = Some(startup);
+        }
         (backend, started)
     }
 
@@ -1844,9 +1936,21 @@ impl Backend {
     ) {
         let (mut backend, events) = Self::detached();
         let (commands, inbox) = mpsc::unbounded_channel();
-        backend.commands = commands;
+        if let Runtime::WhatsApp {
+            commands: slot, ..
+        } = &mut backend.runtime
+        {
+            *slot = commands;
+        }
         backend.offline = false;
         (backend, inbox, events)
+    }
+
+    pub fn provider(&self) -> Provider {
+        match &self.runtime {
+            Runtime::WhatsApp { .. } => Provider::WhatsApp,
+            Runtime::Telegram { .. } => Provider::Telegram,
+        }
     }
 
     /// Disables commands except shutdown.
@@ -1860,6 +1964,9 @@ impl Backend {
 
     /// Queue runtime work, or handle local preview work in an offline demo.
     pub fn send(&self, command: Command) {
+        let commands = match &self.runtime {
+            Runtime::WhatsApp { commands, .. } | Runtime::Telegram { commands, .. } => commands,
+        };
         if self.offline && !matches!(command, Command::Shutdown) {
             #[cfg(any(test, feature = "demo"))]
             if let Command::PreparePicturePreview {
@@ -1893,7 +2000,7 @@ impl Backend {
             }
             return;
         }
-        let _ = self.commands.send(command);
+        let _ = commands.send(command);
     }
 
     /// Wake an offline demo when its local preview worker finishes.
@@ -1905,7 +2012,16 @@ impl Backend {
     /// Captures real UI commands for an offline demo's local responder.
     #[cfg(any(test, feature = "demo"))]
     pub(crate) fn record_demo_commands(&mut self) {
-        assert!(self.offline && self.thread.is_none());
+        assert!(
+            self.offline
+                && matches!(
+                    &self.runtime,
+                    Runtime::WhatsApp {
+                        thread: None,
+                        ..
+                    }
+                )
+        );
         self.demo_commands = Some(Default::default());
     }
 
@@ -1919,19 +2035,29 @@ impl Backend {
     }
 
     pub fn poll(&self) -> Vec<Event> {
-        self.events.try_iter().collect()
+        match &self.runtime {
+            Runtime::WhatsApp { events, .. } | Runtime::Telegram { events, .. } => {
+                events.try_iter().collect()
+            }
+        }
     }
 
     /// Start database migrations only after the first window frame has been
     /// acknowledged by the update helper. Dropping this permit cancels startup.
     pub fn take_startup(&mut self) -> Option<tokio::sync::oneshot::Sender<()>> {
-        self.startup.take()
+        match &mut self.runtime {
+            Runtime::WhatsApp { startup, .. } => startup.take(),
+            Runtime::Telegram { .. } => None,
+        }
     }
 
     pub fn shutdown(&mut self) {
-        self.startup.take();
+        self.take_startup();
         self.send(Command::Shutdown);
-        if let Some(thread) = self.thread.take() {
+        let thread = match &mut self.runtime {
+            Runtime::WhatsApp { thread, .. } | Runtime::Telegram { thread, .. } => thread.take(),
+        };
+        if let Some(thread) = thread {
             let _ = thread.join();
         }
     }
