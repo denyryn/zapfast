@@ -3524,6 +3524,9 @@ pub enum Action {
     AddAccount,
     /// Starts linking an account on one network.
     AddAccountOf(Provider),
+    /// Turns the account being added, before it is linked, into one on the
+    /// other network.
+    SwitchProvider(Provider),
     /// Telegram: sends a login code to the number in the login form.
     TelegramRequestCode,
     /// Telegram: submits the login code in the form.

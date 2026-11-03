@@ -10054,6 +10054,13 @@ impl App {
             Action::CycleAccount(step) => self.cycle_account(step, Instant::now()),
             Action::AddAccount => self.add_account(Provider::WhatsApp),
             Action::AddAccountOf(provider) => self.add_account(provider),
+            Action::SwitchProvider(provider) => {
+                if self.provider != provider && !self.is_linked() {
+                    let old = self.account().id.clone();
+                    self.add_account(provider);
+                    self.remove_account(&old);
+                }
+            }
             Action::TelegramRequestCode => {
                 let api_id = self.tg.api_id.trim().parse::<i32>().ok();
                 let api_hash = match self.tg.api_hash.trim() {

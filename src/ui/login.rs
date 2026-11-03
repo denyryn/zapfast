@@ -80,6 +80,7 @@ pub(super) fn card(
 }
 
 fn body(app: &mut App, ui: &mut egui::Ui) {
+    provider_switch(app, ui);
     match app.provider {
         Provider::Telegram => telegram(app, ui),
         Provider::WhatsApp => whatsapp(app, ui),
@@ -98,6 +99,34 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         theme::regular(11.5),
         app.palette.dim,
     );
+}
+
+/// The network of the account being linked, chosen beside its tagline: the
+/// account is still unlinked, so it can become the other one.
+fn provider_switch(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let current = app.provider;
+    let entries = [(Provider::WhatsApp, "WhatsApp"), (Provider::Telegram, "Telegram")];
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        let spacing = ui.spacing().item_spacing.x;
+        let total = entries
+            .iter()
+            .map(|(_, label)| theme::soft_button_width(ui, label, false))
+            .sum::<f32>()
+            + spacing * (entries.len() as f32 - 1.0);
+        ui.add_space((ui.available_width() - total).max(0.0) / 2.0);
+        for &(provider, label) in &entries {
+            let selected = provider == current;
+            if theme::soft_button(ui, &palette, None, label, selected).clicked() && !selected {
+                chosen = Some(provider);
+            }
+        }
+    });
+    ui.add_space(4.0);
+    if let Some(provider) = chosen {
+        app.actions.push(Action::SwitchProvider(provider));
+    }
 }
 
 fn whatsapp(app: &mut App, ui: &mut egui::Ui) {
