@@ -10058,7 +10058,7 @@ impl App {
                 if self.provider != provider && !self.is_linked() {
                     let old = self.account().id.clone();
                     self.add_account(provider);
-                    self.remove_account(&old);
+                    self.remove_account(old);
                 }
             }
             Action::TelegramRequestCode => {
