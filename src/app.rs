@@ -1856,9 +1856,12 @@ impl App {
             .iter()
             .map(|account| account.id.0.clone())
             .collect();
-        self.roster
-            .providers
-            .retain(|id, _| self.roster.order.contains(id));
+        self.roster.providers = self
+            .accounts
+            .iter()
+            .filter(|account| account.provider != Provider::default())
+            .map(|account| (account.id.0.clone(), account.provider))
+            .collect();
         if let Err(error) = self.roster.save_to(&self.files, &self.dirs.accounts_file()) {
             log::warn!("could not save accounts.json: {error}");
         }
@@ -14410,6 +14413,21 @@ mod tests {
         let roster = AccountRoster::load(&app.dirs.accounts_file()).unwrap();
         assert_eq!(roster.order, ["1".to_string(), "2".to_string()]);
         assert_eq!(roster.active, "1");
+    }
+
+    #[test]
+    fn a_telegram_account_is_remembered_as_telegram() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::headless(AppDirs::under(directory.path()), Settings::default()).0;
+        let ctx = egui::Context::default();
+        app.apply(Action::AddAccountOf(Provider::Telegram), &ctx);
+        assert_eq!(app.provider, Provider::Telegram);
+        assert!(app.files.flush(Duration::from_secs(10)));
+        let roster = AccountRoster::load(&app.dirs.accounts_file()).unwrap();
+        assert_eq!(
+            roster.provider(app.account().id.as_str()),
+            Provider::Telegram
+        );
     }
 
     #[test]

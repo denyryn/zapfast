@@ -30,20 +30,38 @@ pub async fn run(
     command_rx: mpsc::UnboundedReceiver<Command>,
     waker: Waker,
 ) {
-    let archive = match Archive::open_telegram(&dirs.telegram_db()) {
-        Ok(archive) => archive,
-        Err(error) => {
+    let archive_path = dirs.telegram_db();
+    let opened = tokio::task::spawn_blocking(move || Archive::open_telegram(&archive_path)).await;
+    let archive = match opened {
+        Ok(Ok(archive)) => archive,
+        Ok(Err(error)) => {
             log::warn!("the Telegram archive could not be opened: {error:#}");
             let _ = events.send(Event::Link(LinkStatus::Failed(error.to_string())));
             waker.wake();
             return;
         }
+        Err(_) => {
+            let _ = events.send(Event::Link(LinkStatus::Failed(
+                "the Telegram archive worker failed".to_owned(),
+            )));
+            waker.wake();
+            return;
+        }
     };
-    let session = match StoredSession::open(&dirs.state.join("session.db")) {
-        Ok(session) => Arc::new(session),
-        Err(error) => {
+    let session_path = dirs.state.join("session.db");
+    let opened = tokio::task::spawn_blocking(move || StoredSession::open(&session_path)).await;
+    let session = match opened {
+        Ok(Ok(session)) => Arc::new(session),
+        Ok(Err(error)) => {
             log::warn!("the Telegram session could not be opened: {error:#}");
             let _ = events.send(Event::Link(LinkStatus::Failed(error.to_string())));
+            waker.wake();
+            return;
+        }
+        Err(_) => {
+            let _ = events.send(Event::Link(LinkStatus::Failed(
+                "the Telegram session worker failed".to_owned(),
+            )));
             waker.wake();
             return;
         }
